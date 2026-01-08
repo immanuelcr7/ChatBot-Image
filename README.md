@@ -5,8 +5,8 @@ A high-performance **Local Conversational Image Recognition System** designed fo
 ## 🏗️ Strict Local AI Architecture
 
 ### 1. Object Detection (YOLOv8)
-- Real-time detection of cars, people, bikes, and urban elements.
-- Precise instance counting (specialized for Cars, People, and Bikes).
+- Real-time detection of various objects and urban elements.
+- Precise instance counting for all recognized categories.
 
 ### 2. Scene Description (BLIP-2)
 - Local scene understanding using the BLIP model.

@@ -49,57 +49,71 @@ class LocalVisionEngine:
 
     def analyze_image(self, image_path: Image.Image) -> Dict[str, Any]:
         """
-        Executes the 3-Step Offline Pipeline.
+        Executes the 3-Step Offline Pipeline with Bounding Box Extraction.
         """
-        # Convert PIL to format YOLO and OCR like
         img_array = np.array(image_path)
+        width, height = image_path.size
         
         # --- STEP 1: Object Detection (YOLOv8) ---
         results = self.yolo_model(image_path, verbose=False)
-        detected_objects = {
-            "car": 0,
-            "person": 0,
-            "bike": 0,
-            "others": []
-        }
+        detected_objects = {}
+        bounding_boxes = []
         
-        others_seen = set()
         for r in results:
             for box in r.boxes:
                 cls_id = int(box.cls[0])
                 label = self.yolo_model.names[cls_id]
+                conf = float(box.conf[0])
                 
-                if label == "car":
-                    detected_objects["car"] += 1
-                elif label == "person":
-                    detected_objects["person"] += 1
-                elif label in ["bicycle", "motorcycle"]:
-                    detected_objects["bike"] += 1
-                else:
-                    others_seen.add(label)
+                # Update counts
+                detected_objects[label] = detected_objects.get(label, 0) + 1
+                
+                # Extract normalized coordinates for bounding box
+                xyxy = box.xyxy[0].tolist()
+                bounding_boxes.append({
+                    "label": label,
+                    "confidence": conf,
+                    "box": {
+                        "top": f"{(xyxy[1]/height)*100}%",
+                        "left": f"{(xyxy[0]/width)*100}%",
+                        "width": f"{((xyxy[2]-xyxy[0])/width)*100}%",
+                        "height": f"{((xyxy[3]-xyxy[1])/height)*100}%"
+                    }
+                })
         
-        detected_objects["others"] = list(others_seen)
-
         # --- STEP 2: Scene Description (BLIP) ---
         inputs = self.blip_processor(image_path, return_tensors="pt").to(self.device)
         out = self.blip_model.generate(**inputs)
         scene_description = self.blip_processor.decode(out[0], skip_special_tokens=True)
 
         # --- STEP 3: Text Extraction (OCR) ---
-        # EasyOCR expects a path or a numpy array
         ocr_results = self.ocr_reader.readtext(img_array)
         text_detected = [res[1] for res in ocr_results]
         
         if not text_detected:
             text_detected = ["No readable text detected"]
 
-        # --- FINAL JSON STRUCTURE ---
+        # --- HEURISTIC RISK ANALYSIS ---
+        risks = []
+        if any(obj in detected_objects for obj in ["fire", "smoke", "knife"]):
+            risks.append("Immediate physical hazard detected.")
+        if any(item in detected_objects for item in ["gas", "leak", "danger"]):
+            risks.append("Structural hazard or chemical indicator detected.")
+        
         return {
             "analysis_mode": "Offline Local AI",
             "scene_description": scene_description,
             "detected_objects": detected_objects,
+            "bounding_boxes": bounding_boxes[:10], # Limit for demo
             "text_detected": text_detected,
-            "confidence_note": "Analysis performed using YOLOv8 + BLIP-2 + OCR without external APIs"
+            "risk_assessment": " ".join(risks) if risks else "Standard environment. No high-risk anomalies detected.",
+            "spatial_metrics": {
+                "object_count": sum(detected_objects.values()),
+                "unique_labels": len(detected_objects),
+                "text_elements": len(text_detected) if text_detected and text_detected[0] != "No readable text detected" else 0,
+                "complexity_score": (sum(detected_objects.values()) * 0.5) + (len(text_detected) * 0.2)
+            },
+            "confidence_note": "Analysis performed using YOLOv8 + BLIP + EasyOCR"
         }
 
 class ImagePreProcessingLayer:
@@ -143,7 +157,7 @@ class VisionProcessingLayer:
             return {
                 "analysis_mode": "Offline Local AI (Failsafe)",
                 "scene_description": "Scene analysis unavailable.",
-                "detected_objects": {"car": 0, "person": 0, "bike": 0, "others": []},
+                "detected_objects": {},
                 "text_detected": ["Error during local processing"],
                 "confidence_note": f"Failsafe mode triggered: {str(e)}"
             }
@@ -157,6 +171,8 @@ class VisualContextSummarizationLayer:
         """
         desc = vision_data.get("scene_description", "Unknown scene")
         obj = vision_data.get("detected_objects", {})
-        counts = f"{obj.get('car', 0)} cars, {obj.get('person', 0)} people"
         
-        return f"{desc}. Detected: {counts}."
+        counts_list = [f"{count} {name}" for name, count in obj.items()]
+        counts_str = ", ".join(counts_list) if counts_list else "no specific objects"
+        
+        return f"{desc}. Detected: {counts_str}."
