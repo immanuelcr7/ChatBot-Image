@@ -208,15 +208,3 @@ chat/
 
 **AI:**
 - Google Gemini 2.0 Flash - LLM for conversational reasoning
-
-## 📝 License
-
-MIT License - Feel free to use this for your projects!
-
-## 🤝 Contributing
-
-Contributions are welcome! This is a demonstration of enterprise-grade architecture patterns for AI systems.
-
----
-
-**Built with ❤️ using a 12-layer AI architecture**
