@@ -49,9 +49,21 @@ async def chat_endpoint(
         clean_query = validator.sanitize_text(query)
         
         # 1. Image Lifecycle & Persistence
+        # Handle either a file upload OR a base64 preview (fallback for session resume)
+        active_image_bytes = None
         if image:
-            image_data = await validator.validate_image(image)
-            processed_image = image_processor.process(image_data)
+            active_image_bytes = await validator.validate_image(image)
+        elif image_preview and "," in image_preview:
+            try:
+                import base64
+                # Extract base64 part
+                header, encoded = image_preview.split(",", 1)
+                active_image_bytes = base64.b64decode(encoded)
+            except Exception as e:
+                print(f"Failed to decode base64 preview: {str(e)}")
+
+        if active_image_bytes:
+            processed_image = image_processor.process(active_image_bytes)
             vision_data = await vision_engine.analyze(processed_image)
             memory.set_vision_context(session_id, vision_data)
         
@@ -94,7 +106,22 @@ async def chat_endpoint(
                 image_preview=image_preview
             )
         
-        # 6. Build Smart Suggestions
+        # 6. Extract Narrative for Insight Card if available
+        detailed_narrative = persistent_vision.get("scene_description", "No narrative yet.")
+        if "The Narrative" in raw_response:
+            import re
+            # Match "The Narrative (Interconnected Journey):" or "The Narrative:"
+            match = re.search(r"The Narrative.*?:(.*?)(?=\n[A-Z][A-Za-z\s\(\)/]+:|$)", raw_response, re.DOTALL)
+            if match:
+                detailed_narrative = match.group(1).strip()
+        elif "Image Overview" in raw_response:
+            import re
+            # Match "Image Overview:"
+            match = re.search(r"Image Overview:(.*?)(?=\n[A-Z][A-Za-z\s\(\)/]+:|$)", raw_response, re.DOTALL)
+            if match:
+                detailed_narrative = match.group(1).strip()
+
+        # 7. Build Smart Suggestions
         suggestions = ["Tell me more about the layout", "Are there any risks?", "Describe the colors"]
         if persistent_vision.get("risk_assessment") and "standard" not in persistent_vision["risk_assessment"].lower():
             suggestions.append("How can the risks be mitigated?")
@@ -110,7 +137,7 @@ async def chat_endpoint(
             "visual_summary": persistent_vision.get("scene_description", "Active"),
             "vision_metadata": persistent_vision,
             "risk_assessment": persistent_vision.get("risk_assessment", "Safe"),
-            "narrative": persistent_vision.get("scene_description", "No narrative yet."),
+            "narrative": detailed_narrative,
             "latency": round(latency, 2)
         }
         

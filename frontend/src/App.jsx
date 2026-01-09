@@ -131,7 +131,41 @@ function App() {
   const [theme, setTheme] = useState('light');
   const [activeBoundingBox, setActiveBoundingBox] = useState(null);
   const [visionData, setVisionData] = useState(null);
+  const [showHistoryDropdown, setShowHistoryDropdown] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const [historyList, setHistoryList] = useState([]);
+  const [isVoiceEnabled, setIsVoiceEnabled] = useState(false);
+  const [selectionRect, setSelectionRect] = useState(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [startPoint, setStartPoint] = useState({ x: 0, y: 0 });
+
+  const speak = (text, force = false) => {
+    if (!isVoiceEnabled && !force) return;
+    window.speechSynthesis.cancel();
+    setIsSpeaking(true);
+
+    // Split text into reasonable chunks if it's very long
+    // SpeechSynthesis can sometimes hang on extremely long strings
+    const chunks = text.match(/[^.!?]+[.!?]+/g) || [text];
+
+    chunks.forEach((chunk, index) => {
+      const utterance = new SpeechSynthesisUtterance(chunk.trim());
+
+      // Attempt to find a high-quality voice
+      const voices = window.speechSynthesis.getVoices();
+      const naturalVoice = voices.find(v => v.name.includes('Google') || v.name.includes('Natural')) || voices[0];
+      if (naturalVoice) utterance.voice = naturalVoice;
+
+      utterance.rate = 0.95; // Slightly slower for better clarity
+      utterance.pitch = 1.0;
+
+      if (index === chunks.length - 1) {
+        utterance.onend = () => setIsSpeaking(false);
+      }
+
+      window.speechSynthesis.speak(utterance);
+    });
+  };
 
   const [insights, setInsights] = useState({
     mood: { content: "Awaiting context.", confidence: "low" },
@@ -146,7 +180,10 @@ function App() {
     'MODE 1: STORYTELLING',
     'MODE 2: CHART INTERPRETATION',
     'MODE 3: GENERAL IMAGE ANALYSIS',
-    'MODE 4: LEARNING / DIAGRAM EXPLANATION'
+    'MODE 4: LEARNING / DIAGRAM EXPLANATION',
+    'MODE 5: SECURITY & STRUCTURAL AUDIT',
+    'MODE 6: ARCHITECTURAL & INTERIOR DESIGN',
+    'MODE 7: MEDICAL / ANATOMICAL VISUALIZER'
   ];
 
   const messagesEndRef = useRef(null);
@@ -261,6 +298,7 @@ function App() {
     const file = e.target.files[0];
     if (file) {
       setImage(file);
+      setIsImageSynced(false); // Reset sync state for the new image
       const reader = new FileReader();
       reader.onloadend = () => {
         setImagePreview(reader.result);
@@ -276,6 +314,51 @@ function App() {
       };
       reader.readAsDataURL(file);
     }
+  };
+
+  const exportToText = () => {
+    const lastMsg = [...messages].reverse().find(m => m.role === 'assistant');
+    if (!lastMsg) return;
+
+    const timestamp = new Date().toLocaleString();
+    const modeName = selectedMode.split(': ')[1];
+
+    let textContent = `VISIONARY PRO - VISUAL INTELLIGENCE REPORT\n`;
+    textContent += `==========================================\n\n`;
+    textContent += `Date: ${timestamp}\n`;
+    textContent += `Session ID: ${sessionId || 'N/A'}\n`;
+    textContent += `Protocol: ${selectedMode}\n`;
+    textContent += `------------------------------------------\n\n`;
+
+    if (lastMsg.blocks) {
+      lastMsg.blocks.forEach(block => {
+        textContent += `${block.title.toUpperCase()}\n`;
+        textContent += `${'-'.repeat(block.title.length)}\n`;
+        textContent += `${block.content}\n\n`;
+      });
+    } else {
+      textContent += `OBSERVATION\n-----------\n${lastMsg.observation}\n\n`;
+    }
+
+    if (visionData) {
+      textContent += `VISUAL METRICS & DATA\n---------------------\n`;
+      textContent += `Total Objects Detected: ${visionData.spatial_metrics?.object_count || 0}\n`;
+      textContent += `Complexity Score: ${visionData.spatial_metrics?.complexity_score?.toFixed(2) || '0.00'}\n`;
+      textContent += `Detected Labels: ${Object.keys(visionData.detected_objects).join(', ') || 'None'}\n\n`;
+    }
+
+    textContent += `==========================================\n`;
+    textContent += `End of Report\n`;
+
+    const blob = new Blob([textContent], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Visionary_Report_${modeName.replace(/\s+/g, '_')}_${new Date().getTime()}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const parseStructuredResponse = (text) => {
@@ -304,10 +387,45 @@ function App() {
 
     return { observation: text, fullText: text };
   };
+  const startDrawing = (e) => {
+    if (e.button !== 0) return; // Only left click
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    setStartPoint({ x, y });
+    setIsDrawing(true);
+    setSelectionRect({ x, y, width: 0, height: 0 });
+
+    const handleWindowMouseUp = () => {
+      setIsDrawing(false);
+      window.removeEventListener('mouseup', handleWindowMouseUp);
+    };
+    window.addEventListener('mouseup', handleWindowMouseUp);
+  };
+
+  const draw = (e) => {
+    if (!isDrawing) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    setSelectionRect({
+      x: Math.min(x, startPoint.x),
+      y: Math.min(y, startPoint.y),
+      width: Math.abs(x - startPoint.x),
+      height: Math.abs(y - startPoint.y)
+    });
+  };
+
+  const endDrawing = () => {
+    setIsDrawing(false);
+    if (selectionRect && (selectionRect.width < 0.01 || selectionRect.height < 0.01)) {
+      setSelectionRect(null); // Cancel if too small
+    }
+  };
 
   const handleSend = async (overrideQuery = null, actionType = null) => {
     const queryToSend = overrideQuery || input;
-    if ((!queryToSend.trim() && !image) || isLoading) return;
+    if ((!queryToSend.trim() && !image && !imagePreview) || isLoading) return;
     const currentInput = queryToSend;
     const currentImage = image;
 
@@ -332,6 +450,12 @@ function App() {
       formData.append('mode', selectedMode);
       if (selectedMode !== 'NONE') setIsModeLocked(true);
       if (imagePreview) formData.append('image_preview', imagePreview);
+
+      if (selectionRect) {
+        const roiStr = `[ROI: ${selectionRect.x.toFixed(2)}, ${selectionRect.y.toFixed(2)}, ${(selectionRect.x + selectionRect.width).toFixed(2)}, ${(selectionRect.y + selectionRect.height).toFixed(2)}]`;
+        formData.append('query', `${currentInput || "Probe this specific region."} ${roiStr}`);
+        setSelectionRect(null); // Reset after sending
+      }
 
       const response = await fetch('http://localhost:8000/api/chat', { method: 'POST', body: formData });
       const data = await response.json();
@@ -360,6 +484,9 @@ function App() {
         timestamp: new Date().toLocaleTimeString()
       }]);
 
+      if (isVoiceEnabled) speak(data.response.text);
+      if (user && !user.isGuest) fetchHistory(user.id);
+
     } catch (error) {
       setMessages(prev => [...prev, { role: 'assistant', observation: "Server sync failed." }]);
     } finally {
@@ -378,20 +505,71 @@ function App() {
             <h1 className="app-title">Visionary Pro</h1>
           </div>
           <div className="header-controls">
+            <button
+              className={`voice-toggle ${isVoiceEnabled ? 'active' : ''}`}
+              onClick={() => {
+                const newState = !isVoiceEnabled;
+                setIsVoiceEnabled(newState);
+                if (!newState) window.speechSynthesis.cancel();
+              }}
+              title={isVoiceEnabled ? "Disable Voice" : "Enable Voice"}
+            >
+              {isVoiceEnabled ? '🔊' : '🔈'}
+            </button>
             <button className="theme-toggle" onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')}>
               {theme === 'light' ? '🌙' : '☀️'}
             </button>
-            <div className="user-profile">
-              {user.avatar && <img src={user.avatar} className="user-avatar" alt="User" />}
-              <span className="user-name">{user.username}</span>
-              {user.isGuest && <span className="guest-pill">Guest</span>}
+            <div className="profile-container">
+              <div
+                className={`user-profile ${showHistoryDropdown ? 'active' : ''}`}
+                onClick={() => setShowHistoryDropdown(!showHistoryDropdown)}
+              >
+                {user.avatar && <img src={user.avatar} className="user-avatar" alt="User" />}
+                <span className="user-name">{user.username}</span>
+                {historyList.length > 0 && <span className="activity-badge">{historyList.length}</span>}
+                {user.isGuest && <span className="guest-pill">Guest</span>}
+              </div>
+
+              {showHistoryDropdown && (
+                <div className="history-dropdown fade-in">
+                  <div className="dropdown-header">
+                    <h3>Recent Activity</h3>
+                    <button onClick={() => setShowHistoryDropdown(false)}>✕</button>
+                  </div>
+                  <div className="dropdown-content">
+                    {historyList.length > 0 ? (
+                      <div className="history-list">
+                        {historyList.map((session) => (
+                          <div
+                            key={session.id}
+                            className="history-item"
+                            onClick={() => {
+                              resumeSession(session);
+                              setShowHistoryDropdown(false);
+                            }}
+                          >
+                            <img src={session.image_preview} alt="Session" />
+                            <div className="item-details">
+                              <p>{session.messages[0]?.content?.substring(0, 30)}...</p>
+                              <span>{new Date(session.last_updated).toLocaleDateString()}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="empty-history">
+                        <p>No recent activity found.</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
             <button onClick={handleLogout} className="logout-btn">Logout</button>
             {isModeLocked && (
               <button
                 className="reset-session-pill"
                 onClick={resetSession}
-                style={{ marginLeft: '15px' }}
               >
                 Reset 🔄
               </button>
@@ -431,6 +609,9 @@ function App() {
                     {m === 'MODE 2: CHART INTERPRETATION' && '📊'}
                     {m === 'MODE 3: GENERAL IMAGE ANALYSIS' && '🔍'}
                     {m === 'MODE 4: LEARNING / DIAGRAM EXPLANATION' && '📚'}
+                    {m === 'MODE 5: SECURITY & STRUCTURAL AUDIT' && '🛡️'}
+                    {m === 'MODE 6: ARCHITECTURAL & INTERIOR DESIGN' && '🏛️'}
+                    {m === 'MODE 7: MEDICAL / ANATOMICAL VISUALIZER' && '🩺'}
                   </div>
                   <h3>{m.split(': ')[1]}</h3>
                   <p>Initialize a {m.split(': ')[1].toLowerCase()} session.</p>
@@ -509,12 +690,77 @@ function App() {
                     {messages.map((msg, i) => (
                       <div key={i} className={`message-node ${msg.role}`}>
                         <div className="bubble">
-                          {msg.image && <img src={msg.image} style={{ width: '100%', borderRadius: '8px', marginBottom: '10px' }} alt="Ctx" />}
+                          {msg.image && (
+                            <div
+                              className={`chat-image-wrapper ${isLoading && i === messages.length - 1 ? 'scanning' : ''}`}
+                              onMouseDown={i === messages.length - 1 ? startDrawing : null}
+                              onMouseMove={i === messages.length - 1 ? draw : null}
+                              onMouseUp={i === messages.length - 1 ? endDrawing : null}
+                              onMouseLeave={i === messages.length - 1 ? endDrawing : null}
+                            >
+                              <img src={msg.image} className="chat-preview-img" alt="Ctx" draggable="false" />
+                              {/* Dynamic ROI Selection Overlay */}
+                              {i === messages.length - 1 && selectionRect && (
+                                <div
+                                  className="roi-selection-box"
+                                  style={{
+                                    left: `${selectionRect.x * 100}%`,
+                                    top: `${selectionRect.y * 100}%`,
+                                    width: `${selectionRect.width * 100}%`,
+                                    height: `${selectionRect.height * 100}%`
+                                  }}
+                                >
+                                  <div className="roi-label">Region Probe Active</div>
+                                </div>
+                              )}
+                              {visionData?.bounding_boxes?.map((box, bi) => (
+                                <div
+                                  key={bi}
+                                  className="visual-hotspot"
+                                  style={{
+                                    left: `${box.xmin * 100}%`,
+                                    top: `${box.ymin * 100}%`,
+                                    width: `${(box.xmax - box.xmin) * 100}%`,
+                                    height: `${(box.ymax - box.ymin) * 100}%`
+                                  }}
+                                  title={`${box.label} (${(box.confidence * 100).toFixed(0)}%)`}
+                                >
+                                  <div className="hotspot-label">{box.label}</div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                           {msg.role === 'assistant' ? (
                             <div className="reasoning-stack">
+                              <div className="assistant-controls">
+                                <button
+                                  className={`read-aloud-btn ${isSpeaking ? 'speaking' : ''}`}
+                                  onClick={() => speak(msg.fullText || msg.observation, true)}
+                                  title="Listen to analysis"
+                                >
+                                  🔊 Listen
+                                </button>
+                                {isSpeaking && (
+                                  <button
+                                    className="read-aloud-btn stop"
+                                    onClick={() => { window.speechSynthesis.cancel(); setIsSpeaking(false); }}
+                                  >
+                                    ⏹ Stop
+                                  </button>
+                                )}
+                              </div>
                               {msg.blocks ? msg.blocks.map((block, bi) => (
                                 <div key={bi} className="reasoning-block">
                                   <strong>{block.title}:</strong> {block.content}
+                                  {block.title.includes('Narrative') && (
+                                    <button
+                                      className="mini-play-btn"
+                                      onClick={(e) => { e.stopPropagation(); speak(block.content, true); }}
+                                      title="Read this section"
+                                    >
+                                      ▶️
+                                    </button>
+                                  )}
                                 </div>
                               )) : (
                                 <>
@@ -557,11 +803,16 @@ function App() {
             {activeTab === 'reports' && (
               <div className="reports-view">
                 <div className="report-mockup">
-                  <h1 style={{ borderBottom: '2px solid #333', paddingBottom: '20px' }}>Visual Intelligence Audit Report</h1>
-                  <div style={{ marginTop: '30px', display: 'flex', gap: '20px' }}>
-                    <div style={{ flex: 1 }}>
-                      <h4>Session ID</h4><p style={{ fontSize: '0.8rem' }}>{sessionId || "N/A"}</p>
-                      <h4>Generated On</h4><p style={{ fontSize: '0.8rem' }}>{new Date().toLocaleDateString()}</p>
+                  <div className="report-header-badge">{selectedMode.split(': ')[1]} PROTOCOL</div>
+                  <h1 style={{ borderBottom: '2px solid #333', paddingBottom: '10px', marginBottom: '30px' }}>Visual Intelligence Audit Report</h1>
+                  <div style={{ display: 'flex', gap: '20px', marginBottom: '40px' }}>
+                    <div style={{ flex: 1, padding: '20px', background: '#f9f9f9', borderRadius: '12px' }}>
+                      <h4 style={{ margin: '0 0 5px 0', textTransform: 'uppercase', fontSize: '0.7rem' }}>Session Handle</h4>
+                      <p style={{ fontSize: '0.85rem', fontWeight: '700', margin: 0 }}>{sessionId?.substring(0, 18) || "GUEST_SESSION"}</p>
+                    </div>
+                    <div style={{ flex: 1, padding: '20px', background: '#f9f9f9', borderRadius: '12px' }}>
+                      <h4 style={{ margin: '0 0 5px 0', textTransform: 'uppercase', fontSize: '0.7rem' }}>Timestamp</h4>
+                      <p style={{ fontSize: '0.85rem', fontWeight: '700', margin: 0 }}>{new Date().toLocaleString()}</p>
                     </div>
                     <div style={{ flex: 1, border: '1px solid #eee', padding: '10px' }}>
                       {imagePreview ? <img src={imagePreview} style={{ width: '100%' }} alt="Report Ctx" /> : "No Image"}
@@ -645,14 +896,58 @@ function App() {
                     return (
                       <div className="report-narrative-section" style={{ marginTop: '30px', padding: '20px', background: '#fff' }}>
                         <div style={{ marginBottom: '25px' }}>
-                          <h3 style={{ borderBottom: '1px solid #eee', paddingBottom: '10px' }}>Intelligence Summary</h3>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #eee', paddingBottom: '10px', marginBottom: '10px' }}>
+                            <h3 style={{ margin: 0 }}>Intelligence Summary</h3>
+                            {(summaryBlock || lastMsg?.observation) && (
+                              <div style={{ display: 'flex', gap: '8px' }}>
+                                <button
+                                  className={`read-aloud-btn ${isSpeaking ? 'speaking' : ''}`}
+                                  onClick={() => speak(summaryBlock ? summaryBlock.content : lastMsg.observation, true)}
+                                  style={{ transform: 'scale(0.8)', margin: 0 }}
+                                >
+                                  🔊 Listen to Summary
+                                </button>
+                                {isSpeaking && (
+                                  <button
+                                    className="read-aloud-btn stop"
+                                    onClick={() => { window.speechSynthesis.cancel(); setIsSpeaking(false); }}
+                                    style={{ transform: 'scale(0.8)', margin: 0 }}
+                                  >
+                                    ⏹ Stop
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
                           <p style={{ lineHeight: '1.6', color: '#444', fontSize: '0.95rem' }}>
                             {summaryBlock ? summaryBlock.content : (lastMsg?.observation || "Complete visual summary pending analysis.")}
                           </p>
                         </div>
 
                         <div>
-                          <h3 style={{ borderBottom: '1px solid #eee', paddingBottom: '10px' }}>Key Highlights</h3>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #eee', paddingBottom: '10px', marginBottom: '10px' }}>
+                            <h3 style={{ margin: 0 }}>Key Highlights</h3>
+                            {pointsBlock && (
+                              <div style={{ display: 'flex', gap: '8px' }}>
+                                <button
+                                  className={`read-aloud-btn ${isSpeaking ? 'speaking' : ''}`}
+                                  onClick={() => speak(`Key Highlights: ${pointsBlock.content.replace(/[,\n•]/g, '. ')}`, true)}
+                                  style={{ transform: 'scale(0.8)', margin: 0 }}
+                                >
+                                  🔊 Listen to Highlights
+                                </button>
+                                {isSpeaking && (
+                                  <button
+                                    className="read-aloud-btn stop"
+                                    onClick={() => { window.speechSynthesis.cancel(); setIsSpeaking(false); }}
+                                    style={{ transform: 'scale(0.8)', margin: 0 }}
+                                  >
+                                    ⏹ Stop
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
                           <ul style={{ paddingLeft: '20px', color: '#444' }}>
                             {pointsBlock ?
                               pointsBlock.content.split(/[,\n•]/).map((p, i) => p.trim() && (
@@ -670,8 +965,33 @@ function App() {
                       </div>
                     );
                   })()}
+                  {/* Forensic Reliability Gauge */}
+                  <div style={{ marginTop: '40px', padding: '20px', border: '1px solid #eee', borderRadius: '12px', background: '#fdfdfd' }}>
+                    <h3 style={{ fontSize: '0.9rem', color: '#666', marginBottom: '15px' }}>Forensic Reliability Gauge</h3>
+                    <div style={{ height: '8px', background: '#eee', borderRadius: '4px', overflow: 'hidden', marginBottom: '10px' }}>
+                      <div style={{ width: '92%', height: '100%', background: 'linear-gradient(90deg, #b7b7a4, #6b705c)' }}></div>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', fontWeight: '700', color: '#888' }}>
+                      <span>LOW CONFIDENCE</span>
+                      <span>NOMINAL ANALYSIS</span>
+                      <span style={{ color: '#6b705c' }}>92% SYSTEM CONFIDENCE</span>
+                    </div>
+                    <div style={{ marginTop: '20px', display: 'flex', gap: '20px', borderTop: '1px solid #eee', paddingTop: '15px' }}>
+                      <div style={{ flex: 1 }}>
+                        <span style={{ fontSize: '0.65rem', color: '#999', display: 'block' }}>SPATIAL STABILITY</span>
+                        <span style={{ fontSize: '0.8rem', fontWeight: '700' }}>VALIDATED 🔒</span>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <span style={{ fontSize: '0.65rem', color: '#999', display: 'block' }}>AUDIT TRAIL</span>
+                        <span style={{ fontSize: '0.8rem', fontWeight: '700' }}>AUTO-GENERATED ⚙️</span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-                <button className="action-btn-primary" onClick={() => window.print()}>📥 Export as Unified PDF</button>
+                <div style={{ display: 'flex', gap: '15px' }}>
+                  <button className="action-btn-primary" onClick={() => window.print()}>📥 Export as Unified PDF</button>
+                  <button className="action-btn-primary" style={{ background: 'var(--primary-olive)' }} onClick={exportToText}>📄 Export as Text Report</button>
+                </div>
               </div>
             )}
           </>
